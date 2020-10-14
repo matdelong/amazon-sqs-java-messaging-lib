@@ -16,8 +16,10 @@ package com.amazon.sqs.javamessaging.acknowledge;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import javax.jms.JMSException;
 
@@ -41,12 +43,22 @@ public class UnorderedAcknowledger implements Acknowledger {
     // identifier
     private final Map<String, SQSMessageIdentifier> unAckMessages;
 
+    private static Integer maxUnackdMessages;
+
     public UnorderedAcknowledger (AmazonSQSMessagingClientWrapper amazonSQSClient, SQSSession session) {
         this.amazonSQSClient = amazonSQSClient;
         this.session = session;
-        this.unAckMessages  = new HashMap<String, SQSMessageIdentifier>();
+
+        // Use a regular hashmap if we don't set the envvar for max unacknowledged messages,
+        // Otherwise, use a LinkedHashMap we limit the max size of to what we've set as MAX_UNACKNOWLEDGED_MESSAGES.
+        this.unAckMessages = getMaxUnackdMessages() > 0 ? new LinkedHashMap<String, SQSMessageIdentifier>() {
+            @Override
+            protected boolean removeEldestEntry(Entry<String, SQSMessageIdentifier> eldest) {
+                return size() > getMaxUnackdMessages();
+            }
+        } : new HashMap<String, SQSMessageIdentifier>();
     }
-    
+
     /**
      * Acknowledges the consumed message via calling <code>deleteMessage</code>.
      */
@@ -83,5 +95,27 @@ public class UnorderedAcknowledger implements Acknowledger {
     public void forgetUnAckMessages() {
         unAckMessages.clear();
     }
-   
+
+    /*
+     * Check a 'MAX_UNACKNOWLEDGED_MESSAGES' environment variable which can be defined as a positive integer value
+     * specifying the maximum number of unacknowledged messages we should hold on to. If we deal with more than that
+     * number of unacknowledged messages, then we 'forget' older unacknowledged messages in a FIFO manner. This means
+     * that calls to the 'getUnAckMessages()' method won't return the old messages, and 'forgetUnAckMessages()' won't
+     * clear them.
+     */
+    private static synchronized int getMaxUnackdMessages() {
+        if (maxUnackdMessages != null) {
+            return maxUnackdMessages;
+        }
+        maxUnackdMessages = -1;
+        final String envVal = System.getenv("MAX_UNACKNOWLEDGED_MESSAGES");
+        if (envVal != null) {
+            try {
+                maxUnackdMessages = Integer.parseInt(envVal);
+            } catch (NumberFormatException ex) {
+                // do nothing - will return default value of no max
+            }
+        }
+        return maxUnackdMessages;
+    }
 }
